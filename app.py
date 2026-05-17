@@ -22,34 +22,39 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# ------------------------- SESSION & REMEMBER ME CONFIG -------------------------
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
-app.config['REMEMBER_COOKIE_DURATION'] = timedelta(days=30)
-app.config['SESSION_COOKIE_SECURE'] = True
-app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+# ------------------------- DATABASE FIX FOR VERCEL -------------------------
+# ប្រើ DATABASE_URL ពី Vercel (Postgres) បើមាន បើអត់ទើប fallback ទៅ SQLite
+database_url = os.environ.get('DATABASE_URL')
+if database_url:
+    # Vercel ផ្ដល់ postgres://... ត្រូវប្ដូរទៅ postgresql://
+    database_url = database_url.replace('postgres://', 'postgresql://', 1)
+else:
+    # សម្រាប់ development លើ local
+    db_path = os.path.join(tempfile.gettempdir(), 'database.db')
+    database_url = f'sqlite:///{db_path}'
 
-# ------------------------- DATABASE (SQLite in /tmp – Vercel compatible) -------------------------
-# ប្រើ SQLite ក្នុង /tmp (ទិន្នន័យអាចបាត់ពេល restart ប៉ុន្តែមិនទាមទារដំឡើងអ្វីបន្ថែម)
-db_path = os.path.join(tempfile.gettempdir(), 'database.db')
-app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-# Secret Key – ត្រូវកំណត់ជាអចិន្ត្រៃយ៍ក្នុង Vercel Env
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-me')
 
-# ពាក្យសម្ងាត់សម្រាប់ចូលទំព័រ Admin រសើប (បញ្ចូលតាម Env ឬប្រើ default)
-ADMIN_VERIFY_PASSWORD = os.getenv('ADMIN_VERIFY_PASSWORD', '123$&123$&123$&')
+# ------------------------- SESSION & REMEMBER ME SETTINGS -------------------------
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)      # session រស់ 30 ថ្ងៃ
+app.config['REMEMBER_COOKIE_DURATION'] = timedelta(days=30)        # remember me cookie 30 ថ្ងៃ
+app.config['SESSION_COOKIE_SECURE'] = True                        # ប្រើ HTTPS (Vercel មាន HTTPS)
+app.config['SESSION_COOKIE_HTTPONLY'] = True                      # ការពារ JavaScript អាន cookie
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'                     # ការពារ CSRF ឆ្លងដែន
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 login_manager.login_message = 'សូមចូលគណនីដើម្បីបន្ត។'
-login_manager.remember_cookie_duration = timedelta(days=30)
-login_manager.session_protection = "basic"
+login_manager.remember_cookie_duration = timedelta(days=30)      # ឲ្យ login_manager ប្រើរយៈពេលដូចគ្នា
+login_manager.session_protection = "basic"                        # ការពារ session ពី IP ផ្លាស់ប្ដូរ
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID')
+# ពាក្យសម្ងាត់សម្រាប់ទំព័រ Admin Deposits (ផ្លាស់ប្ដូរតាម Environment Variable)
+ADMIN_DEPOSIT_PASSWORD = os.getenv('ADMIN_DEPOSIT_PASSWORD', 'Khm3rT0pUp!2024#Secure')
 
 # ------------------------- MODELS -------------------------
 class User(UserMixin, db.Model):
@@ -130,18 +135,6 @@ def csrf_required(f):
     return decorated_function
 
 app.jinja_env.globals['csrf_token'] = generate_csrf_token
-
-# Decorator for admin pages that require extra verification
-def admin_verify_required(f):
-    @wraps(f)
-    @login_required
-    def decorated_function(*args, **kwargs):
-        if not current_user.is_admin:
-            abort(403)
-        if not session.get('admin_verified'):
-            return redirect(url_for('admin_verify', next=request.path))
-        return f(*args, **kwargs)
-    return decorated_function
 
 def admin_required(f):
     @wraps(f)
@@ -312,8 +305,6 @@ SERVICES_DATA = [
     ("mc", "4830", 58.27, "/mc {uid} {server_id} 4830", True),
 ]
 
-# សម្រាប់ភាពពេញលេញ សូមបន្ថែម SERVICES_DATA ទាំងអស់ពីកូដមុនរបស់អ្នក
-
 def populate_services():
     if Service.query.first() is None:
         for game, product, supplier, cmd, needs_server in SERVICES_DATA:
@@ -357,7 +348,7 @@ def register():
         db.session.commit()
         send_telegram(ADMIN_CHAT_ID, f"🆕 អ្នកប្រើថ្មីបានចុះឈ្មោះ\n👤 <b>{username}</b>\n📧 {email}")
         login_user(user)
-        session.permanent = True
+        session.permanent = True  # ធ្វើឲ្យ session រស់ 30 ថ្ងៃ
         flash('ចុះឈ្មោះជោគជ័យ!', 'success')
         return redirect(url_for('dashboard'))
     return render_template('register.html')
@@ -379,7 +370,7 @@ def login():
             flash('គណនីរបស់អ្នកត្រូវបានហាមឃាត់។', 'danger')
             return redirect(url_for('login'))
         login_user(user, remember=remember)
-        session.permanent = True
+        session.permanent = True  # ឲ្យ session មានអាយុវែង ទោះមិនជ្រើស Remember Me
         flash('ចូលគណនីជោគជ័យ!', 'success')
         return redirect(url_for('dashboard'))
     return render_template('login.html')
@@ -394,7 +385,6 @@ def logout():
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    session.permanent = True
     recent_orders = Order.query.filter_by(user_id=current_user.id).order_by(Order.id.desc()).limit(5).all()
     deposits = Deposit.query.filter_by(user_id=current_user.id).order_by(Deposit.id.desc()).limit(5).all()
     total_orders = Order.query.filter_by(user_id=current_user.id).count()
@@ -407,7 +397,6 @@ def dashboard():
 @login_required
 @csrf_required
 def deposit():
-    session.permanent = True
     if request.method == 'POST':
         amount = request.form.get('amount', '').strip()
         try:
@@ -439,12 +428,10 @@ def deposit():
         return redirect(url_for('dashboard'))
     return render_template('deposit.html')
 
-# ------------------------- API KEY MANAGEMENT -------------------------
 @app.route('/generate_api_key', methods=['POST'])
 @login_required
 @csrf_required
 def generate_api_key():
-    session.permanent = True
     if current_user.api_key:
         flash('អ្នកមាន API Key រួចហើយ។ អាចកំណត់ឡើងវិញ (Reset) បាន។', 'warning')
         return redirect(url_for('dashboard'))
@@ -460,7 +447,6 @@ def generate_api_key():
 @login_required
 @csrf_required
 def reset_api_key():
-    session.permanent = True
     key = 'api_sk_' + ''.join(random.choices(string.ascii_letters + string.digits, k=32))
     while User.query.filter_by(api_key=key).first():
         key = 'api_sk_' + ''.join(random.choices(string.ascii_letters + string.digits, k=32))
@@ -469,7 +455,16 @@ def reset_api_key():
     flash('API Key បានកំណត់ឡើងវិញដោយជោគជ័យ។', 'success')
     return redirect(url_for('dashboard'))
 
-# ------------------------- API ORDER -------------------------
+@app.route('/api/docs')
+def api_docs():
+    return render_template('api_docs.html')
+
+@app.route('/order_history')
+@login_required
+def order_history():
+    orders = Order.query.filter_by(user_id=current_user.id).order_by(Order.id.desc()).all()
+    return render_template('order_history.html', orders=orders)
+
 @app.route('/api/order', methods=['POST'])
 def api_order():
     api_key = request.headers.get('Authorization')
@@ -520,7 +515,7 @@ def api_order():
         "command": cmd
     })
 
-# ------------------------- ADMIN PANEL (general) -------------------------
+# ------------------------- ADMIN ROUTES -------------------------
 @app.route('/admin')
 @admin_required
 def admin_panel():
@@ -534,44 +529,14 @@ def admin_panel():
                            orders=orders,
                            services=services)
 
-# ------------------------- ADMIN EXTRA VERIFICATION -------------------------
-@app.route('/admin/verify', methods=['GET', 'POST'])
-@login_required
-def admin_verify():
-    if not current_user.is_admin:
-        abort(403)
-    # បើបានផ្ទៀងផ្ទាត់រួចហើយ ឲ្យទៅទំព័រដែលស្នើ
-    if session.get('admin_verified'):
-        next_url = request.args.get('next') or url_for('admin_deposits')
-        return redirect(next_url)
-
-    if request.method == 'POST':
-        pwd = request.form.get('admin_password', '')
-        if pwd == ADMIN_VERIFY_PASSWORD:
-            session['admin_verified'] = True
-            session.permanent = True
-            next_url = request.form.get('next') or url_for('admin_deposits')
-            return redirect(next_url)
-        else:
-            flash('ពាក្យសម្ងាត់ Admin មិនត្រឹមត្រូវ', 'danger')
-    next_url = request.args.get('next') or url_for('admin_deposits')
-    return render_template('admin_verify.html', next=next_url)
-
-# ------------------------- ADMIN DEPOSIT VERIFICATION PAGE -------------------------
-@app.route('/admin/deposits')
-@admin_verify_required
-def admin_deposits():
-    pending_deposits = Deposit.query.filter_by(status='pending').order_by(Deposit.id.desc()).all()
-    return render_template('admin_deposits.html', deposits=pending_deposits)
-
 @app.route('/admin/approve_deposit/<int:deposit_id>', methods=['POST'])
-@admin_verify_required
+@admin_required
 @csrf_required
 def admin_approve_deposit(deposit_id):
     dep = Deposit.query.get_or_404(deposit_id)
     if dep.status != 'pending':
         flash('Deposit already processed.', 'warning')
-        return redirect(url_for('admin_deposits'))
+        return redirect(url_for('admin_panel'))
     user = User.query.get(dep.user_id)
     if not user:
         abort(404)
@@ -584,16 +549,16 @@ def admin_approve_deposit(deposit_id):
             f"✅ <b>ប្រាក់តម្កល់ត្រូវបានយល់ព្រម</b>\n👤 {user.username}\n💵 ${dep.amount:.2f}\n📌 បញ្ចប់"
         )
     flash('Deposit approved. Balance updated.', 'success')
-    return redirect(url_for('admin_deposits'))
+    return redirect(url_for('admin_panel'))
 
 @app.route('/admin/reject_deposit/<int:deposit_id>', methods=['POST'])
-@admin_verify_required
+@admin_required
 @csrf_required
 def admin_reject_deposit(deposit_id):
     dep = Deposit.query.get_or_404(deposit_id)
     if dep.status != 'pending':
         flash('Deposit already processed.', 'warning')
-        return redirect(url_for('admin_deposits'))
+        return redirect(url_for('admin_panel'))
     dep.status = 'rejected'
     db.session.commit()
     if dep.telegram_message_id and dep.telegram_chat_id:
@@ -602,9 +567,113 @@ def admin_reject_deposit(deposit_id):
             f"❌ <b>ប្រាក់តម្កល់ត្រូវបានបដិសេធ</b>\n👤 {User.query.get(dep.user_id).username}\n💵 ${dep.amount:.2f}"
         )
     flash('Deposit rejected.', 'info')
+    return redirect(url_for('admin_panel'))
+
+@app.route('/admin/ban_user/<int:user_id>', methods=['POST'])
+@admin_required
+@csrf_required
+def admin_ban_user(user_id):
+    user = User.query.get_or_404(user_id)
+    user.is_banned = not user.is_banned
+    status = "banned" if user.is_banned else "unbanned"
+    db.session.commit()
+    flash(f'User {user.username} {status}.', 'success')
+    return redirect(url_for('admin_panel'))
+
+@app.route('/admin/add_balance/<int:user_id>', methods=['POST'])
+@admin_required
+@csrf_required
+def admin_add_balance(user_id):
+    user = User.query.get_or_404(user_id)
+    amount = request.form.get('amount', 0, type=float)
+    if amount <= 0:
+        flash('Amount must be positive.', 'danger')
+    else:
+        user.balance += amount
+        db.session.commit()
+        flash(f'Added ${amount:.2f} to {user.username}. New balance: ${user.balance:.2f}', 'success')
+    return redirect(url_for('admin_panel'))
+
+@app.route('/admin/update_price/<int:service_id>', methods=['POST'])
+@admin_required
+@csrf_required
+def admin_update_price(service_id):
+    service = Service.query.get_or_404(service_id)
+    new_price = request.form.get('selling_price', type=float)
+    if new_price is not None and new_price > 0:
+        service.selling_price = new_price
+        db.session.commit()
+        flash('Price updated.', 'success')
+    else:
+        flash('Invalid price.', 'danger')
+    return redirect(url_for('admin_panel'))
+
+# ------------------------- NEW: ADMIN DEPOSITS PAGE (separate password) -------------------------
+@app.route('/admin/deposits', methods=['GET', 'POST'])
+@csrf_required
+def admin_deposits():
+    # ពិនិត្យថាបានបញ្ចូលពាក្យសម្ងាត់ឬនៅ
+    if not session.get('admin_deposits_authenticated'):
+        if request.method == 'POST' and 'password' in request.form:
+            pwd = request.form['password']
+            if pwd == ADMIN_DEPOSIT_PASSWORD:
+                session['admin_deposits_authenticated'] = True
+                session.permanent = True  # ចងចាំក្នុង session នេះ
+                flash('ជោគជ័យ! ឥឡូវអ្នកអាចគ្រប់គ្រងការតម្កល់។', 'success')
+                return redirect(url_for('admin_deposits'))
+            else:
+                flash('ពាក្យសម្ងាត់មិនត្រឹមត្រូវ', 'danger')
+        return render_template('admin_deposits_login.html')  # ទំព័របញ្ចូលពាក្យសម្ងាត់
+
+    # ប្រសិនបើបានផ្ទៀងផ្ទាត់រួច បង្ហាញបញ្ជី deposit ដែលកំពុងរងចាំ
+    pending_deposits = Deposit.query.filter_by(status='pending').order_by(Deposit.id.desc()).all()
+    return render_template('admin_deposits.html', deposits=pending_deposits)
+
+@app.route('/admin/deposits/approve/<int:deposit_id>', methods=['POST'])
+@csrf_required
+def admin_deposits_approve(deposit_id):
+    if not session.get('admin_deposits_authenticated'):
+        abort(403)
+    dep = Deposit.query.get_or_404(deposit_id)
+    if dep.status != 'pending':
+        flash('ការតម្កល់នេះមិនស្ថិតក្នុងស្ថានភាពរងចាំទេ។', 'warning')
+        return redirect(url_for('admin_deposits'))
+    user = User.query.get(dep.user_id)
+    if not user:
+        abort(404)
+    dep.status = 'accepted'
+    user.balance += dep.amount
+    db.session.commit()
+    # Telegram នៅតែដំណើរការ (edit)
+    if dep.telegram_message_id and dep.telegram_chat_id:
+        edit_telegram_message(
+            dep.telegram_chat_id, dep.telegram_message_id,
+            f"✅ <b>ប្រាក់តម្កល់ត្រូវបានយល់ព្រម (តាមរយៈ Web)</b>\n👤 {user.username}\n💵 ${dep.amount:.2f}\n📌 បញ្ចប់"
+        )
+    flash(f'បានយល់ព្រមការតម្កល់ #{deposit_id} ថវិកា ${dep.amount:.2f} សម្រាប់ {user.username}', 'success')
     return redirect(url_for('admin_deposits'))
 
-# ------------------------- WEBHOOK (Telegram) -------------------------
+@app.route('/admin/deposits/reject/<int:deposit_id>', methods=['POST'])
+@csrf_required
+def admin_deposits_reject(deposit_id):
+    if not session.get('admin_deposits_authenticated'):
+        abort(403)
+    dep = Deposit.query.get_or_404(deposit_id)
+    if dep.status != 'pending':
+        flash('ការតម្កល់នេះមិនស្ថិតក្នុងស្ថានភាពរងចាំទេ។', 'warning')
+        return redirect(url_for('admin_deposits'))
+    user = User.query.get(dep.user_id)
+    dep.status = 'rejected'
+    db.session.commit()
+    if dep.telegram_message_id and dep.telegram_chat_id:
+        edit_telegram_message(
+            dep.telegram_chat_id, dep.telegram_message_id,
+            f"❌ <b>ប្រាក់តម្កល់ត្រូវបានបដិសេធ (តាមរយៈ Web)</b>\n👤 {user.username}\n💵 ${dep.amount:.2f}"
+        )
+    flash(f'បានបដិសេធការតម្កល់ #{deposit_id} ថវិកា ${dep.amount:.2f} សម្រាប់ {user.username}', 'info')
+    return redirect(url_for('admin_deposits'))
+
+# ------------------------- TELEGRAM WEBHOOK -------------------------
 @app.route('/webhook/telegram', methods=['POST'])
 def telegram_webhook():
     data = request.get_json()
