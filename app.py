@@ -25,26 +25,21 @@ app = Flask(__name__)
 # ------------------------- SESSION & REMEMBER ME CONFIG -------------------------
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
 app.config['REMEMBER_COOKIE_DURATION'] = timedelta(days=30)
-app.config['SESSION_COOKIE_SECURE'] = True      # ប្រើ HTTPS ប្រកបដោយសុវត្ថិភាព
-app.config['SESSION_COOKIE_HTTPONLY'] = True    # ការពារ XSS
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'   # អនុញ្ញាតឲ្យផ្ញើ cookie ឆ្លងដែនបានត្រឹមត្រូវ
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
-# ------------------------- DATABASE (Turso or SQLite fallback) -------------------------
-TURSO_DATABASE_URL = os.environ.get('TURSO_DATABASE_URL')
-TURSO_AUTH_TOKEN = os.environ.get('TURSO_AUTH_TOKEN')
-
-if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
-    database_url = f"{TURSO_DATABASE_URL}?authToken={TURSO_AUTH_TOKEN}"
-else:
-    db_path = os.path.join(tempfile.gettempdir(), 'database.db')
-    database_url = f'sqlite:///{db_path}'
-
-app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+# ------------------------- DATABASE (SQLite in /tmp – Vercel compatible) -------------------------
+# ប្រើ SQLite ក្នុង /tmp (ទិន្នន័យអាចបាត់ពេល restart ប៉ុន្តែមិនទាមទារដំឡើងអ្វីបន្ថែម)
+db_path = os.path.join(tempfile.gettempdir(), 'database.db')
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Secret Key – ត្រូវកំណត់ជាអចិន្ត្រៃយ៍ក្នុង Vercel Env
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-me')
 
-# ------------------------- ADMIN SECRET PASSWORD -------------------------
-ADMIN_SECRET_PASSWORD = os.getenv('ADMIN_SECRET_PASSWORD', '123$&123$&123$&')
+# ពាក្យសម្ងាត់សម្រាប់ចូលទំព័រ Admin រសើប (បញ្ចូលតាម Env ឬប្រើ default)
+ADMIN_VERIFY_PASSWORD = os.getenv('ADMIN_VERIFY_PASSWORD', '123$&123$&123$&')
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
@@ -136,22 +131,24 @@ def csrf_required(f):
 
 app.jinja_env.globals['csrf_token'] = generate_csrf_token
 
+# Decorator for admin pages that require extra verification
+def admin_verify_required(f):
+    @wraps(f)
+    @login_required
+    def decorated_function(*args, **kwargs):
+        if not current_user.is_admin:
+            abort(403)
+        if not session.get('admin_verified'):
+            return redirect(url_for('admin_verify', next=request.path))
+        return f(*args, **kwargs)
+    return decorated_function
+
 def admin_required(f):
     @wraps(f)
     @login_required
     def decorated_function(*args, **kwargs):
         if not current_user.is_admin:
             abort(403)
-        return f(*args, **kwargs)
-    return decorated_function
-
-# ------------------------- ADMIN PASSWORD CHECK DECORATOR -------------------------
-def admin_password_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not session.get('admin_authenticated'):
-            # បើមិនទាន់ផ្ទៀងផ្ទាត់ តម្រង់ទៅទំព័របញ្ចូលពាក្យសម្ងាត់ admin
-            return redirect(url_for('admin_login', next=request.url))
         return f(*args, **kwargs)
     return decorated_function
 
@@ -315,6 +312,8 @@ SERVICES_DATA = [
     ("mc", "4830", 58.27, "/mc {uid} {server_id} 4830", True),
 ]
 
+# សម្រាប់ភាពពេញលេញ សូមបន្ថែម SERVICES_DATA ទាំងអស់ពីកូដមុនរបស់អ្នក
+
 def populate_services():
     if Service.query.first() is None:
         for game, product, supplier, cmd, needs_server in SERVICES_DATA:
@@ -388,8 +387,6 @@ def login():
 @app.route('/logout')
 @login_required
 def logout():
-    # លុប admin authentication flag ផងដែរ
-    session.pop('admin_authenticated', None)
     logout_user()
     flash('អ្នកបានចាកចេញដោយជោគជ័យ។', 'info')
     return redirect(url_for('login'))
@@ -442,6 +439,7 @@ def deposit():
         return redirect(url_for('dashboard'))
     return render_template('deposit.html')
 
+# ------------------------- API KEY MANAGEMENT -------------------------
 @app.route('/generate_api_key', methods=['POST'])
 @login_required
 @csrf_required
@@ -471,17 +469,7 @@ def reset_api_key():
     flash('API Key បានកំណត់ឡើងវិញដោយជោគជ័យ។', 'success')
     return redirect(url_for('dashboard'))
 
-@app.route('/api/docs')
-def api_docs():
-    return render_template('api_docs.html')
-
-@app.route('/order_history')
-@login_required
-def order_history():
-    session.permanent = True
-    orders = Order.query.filter_by(user_id=current_user.id).order_by(Order.id.desc()).all()
-    return render_template('order_history.html', orders=orders)
-
+# ------------------------- API ORDER -------------------------
 @app.route('/api/order', methods=['POST'])
 def api_order():
     api_key = request.headers.get('Authorization')
@@ -532,33 +520,9 @@ def api_order():
         "command": cmd
     })
 
-# ------------------------- ADMIN AUTHENTICATION ROUTES -------------------------
-@app.route('/admin/login', methods=['GET', 'POST'])
-@admin_required
-def admin_login():
-    if request.method == 'POST':
-        password = request.form.get('password', '')
-        if password == ADMIN_SECRET_PASSWORD:
-            session['admin_authenticated'] = True
-            session.permanent = True
-            next_url = request.args.get('next') or url_for('admin_panel')
-            flash('Admin authentication successful!', 'success')
-            return redirect(next_url)
-        else:
-            flash('Incorrect admin password.', 'danger')
-    return render_template('admin_login.html')
-
-@app.route('/admin/logout')
-@admin_required
-def admin_logout():
-    session.pop('admin_authenticated', None)
-    flash('Admin session ended.', 'info')
-    return redirect(url_for('dashboard'))
-
-# ------------------------- ADMIN ROUTES (protected by admin_required + admin_password_required) -------------------------
+# ------------------------- ADMIN PANEL (general) -------------------------
 @app.route('/admin')
 @admin_required
-@admin_password_required
 def admin_panel():
     users = User.query.all()
     deposits = Deposit.query.order_by(Deposit.id.desc()).limit(50).all()
@@ -570,16 +534,38 @@ def admin_panel():
                            orders=orders,
                            services=services)
 
+# ------------------------- ADMIN EXTRA VERIFICATION -------------------------
+@app.route('/admin/verify', methods=['GET', 'POST'])
+@login_required
+def admin_verify():
+    if not current_user.is_admin:
+        abort(403)
+    # បើបានផ្ទៀងផ្ទាត់រួចហើយ ឲ្យទៅទំព័រដែលស្នើ
+    if session.get('admin_verified'):
+        next_url = request.args.get('next') or url_for('admin_deposits')
+        return redirect(next_url)
+
+    if request.method == 'POST':
+        pwd = request.form.get('admin_password', '')
+        if pwd == ADMIN_VERIFY_PASSWORD:
+            session['admin_verified'] = True
+            session.permanent = True
+            next_url = request.form.get('next') or url_for('admin_deposits')
+            return redirect(next_url)
+        else:
+            flash('ពាក្យសម្ងាត់ Admin មិនត្រឹមត្រូវ', 'danger')
+    next_url = request.args.get('next') or url_for('admin_deposits')
+    return render_template('admin_verify.html', next=next_url)
+
+# ------------------------- ADMIN DEPOSIT VERIFICATION PAGE -------------------------
 @app.route('/admin/deposits')
-@admin_required
-@admin_password_required
+@admin_verify_required
 def admin_deposits():
     pending_deposits = Deposit.query.filter_by(status='pending').order_by(Deposit.id.desc()).all()
     return render_template('admin_deposits.html', deposits=pending_deposits)
 
 @app.route('/admin/approve_deposit/<int:deposit_id>', methods=['POST'])
-@admin_required
-@admin_password_required
+@admin_verify_required
 @csrf_required
 def admin_approve_deposit(deposit_id):
     dep = Deposit.query.get_or_404(deposit_id)
@@ -601,8 +587,7 @@ def admin_approve_deposit(deposit_id):
     return redirect(url_for('admin_deposits'))
 
 @app.route('/admin/reject_deposit/<int:deposit_id>', methods=['POST'])
-@admin_required
-@admin_password_required
+@admin_verify_required
 @csrf_required
 def admin_reject_deposit(deposit_id):
     dep = Deposit.query.get_or_404(deposit_id)
@@ -619,48 +604,7 @@ def admin_reject_deposit(deposit_id):
     flash('Deposit rejected.', 'info')
     return redirect(url_for('admin_deposits'))
 
-@app.route('/admin/ban_user/<int:user_id>', methods=['POST'])
-@admin_required
-@admin_password_required
-@csrf_required
-def admin_ban_user(user_id):
-    user = User.query.get_or_404(user_id)
-    user.is_banned = not user.is_banned
-    status = "banned" if user.is_banned else "unbanned"
-    db.session.commit()
-    flash(f'User {user.username} {status}.', 'success')
-    return redirect(url_for('admin_panel'))
-
-@app.route('/admin/add_balance/<int:user_id>', methods=['POST'])
-@admin_required
-@admin_password_required
-@csrf_required
-def admin_add_balance(user_id):
-    user = User.query.get_or_404(user_id)
-    amount = request.form.get('amount', 0, type=float)
-    if amount <= 0:
-        flash('Amount must be positive.', 'danger')
-    else:
-        user.balance += amount
-        db.session.commit()
-        flash(f'Added ${amount:.2f} to {user.username}. New balance: ${user.balance:.2f}', 'success')
-    return redirect(url_for('admin_panel'))
-
-@app.route('/admin/update_price/<int:service_id>', methods=['POST'])
-@admin_required
-@admin_password_required
-@csrf_required
-def admin_update_price(service_id):
-    service = Service.query.get_or_404(service_id)
-    new_price = request.form.get('selling_price', type=float)
-    if new_price is not None and new_price > 0:
-        service.selling_price = new_price
-        db.session.commit()
-        flash('Price updated.', 'success')
-    else:
-        flash('Invalid price.', 'danger')
-    return redirect(url_for('admin_panel'))
-
+# ------------------------- WEBHOOK (Telegram) -------------------------
 @app.route('/webhook/telegram', methods=['POST'])
 def telegram_webhook():
     data = request.get_json()
