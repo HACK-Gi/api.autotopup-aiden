@@ -1,56 +1,31 @@
-{% extends "base.html" %}
-{% block title %}Admin Deposit Verification{% endblock %}
-{% block content %}
-<h2 class="text-warning"><i class="fas fa-check-circle"></i> បញ្ជាក់ការទូទាត់</h2>
-<p class="text-muted">បញ្ជីអ្នកប្រើប្រាស់ដែលបានដាក់ស្នើការតម្កល់ប្រាក់ និងកំពុងរងចាំការផ្ទៀងផ្ទាត់។</p>
-
-{% if deposits %}
-    <div class="table-responsive">
-        <table class="table table-dark table-striped table-hover">
-            <thead class="thead-light">
-                <tr>
-                    <th>ID</th>
-                    <th>អ្នកប្រើ</th>
-                    <th>ចំនួនទឹកប្រាក់</th>
-                    <th>ស្ថានភាព</th>
-                    <th>កាលបរិច្ឆេទ</th>
-                    <th>សកម្មភាព</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for d in deposits %}
-                <tr>
-                    <td>{{ d.id }}</td>
-                    <td><strong>{{ d.user.username }}</strong></td>
-                    <td>${{ "%.2f"|format(d.amount) }}</td>
-                    <td><span class="badge bg-warning">Pending</span></td>
-                    <td>{{ d.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                    <td>
-                        <form method="POST" action="{{ url_for('admin_approve_deposit', deposit_id=d.id) }}" style="display:inline">
-                            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-                            <button class="btn btn-success btn-sm" onclick="return confirm('តើអ្នកចង់ទទួលយកការទូទាត់នេះមែនទេ?')">
-                                <i class="fas fa-check"></i> យល់ព្រម
-                            </button>
-                        </form>
-                        <form method="POST" action="{{ url_for('admin_reject_deposit', deposit_id=d.id) }}" style="display:inline">
-                            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-                            <button class="btn btn-danger btn-sm" onclick="return confirm('តើអ្នកចង់បដិសេធការទូទាត់នេះមែនទេ?')">
-                                <i class="fas fa-times"></i> បដិសេធ
-                            </button>
-                        </form>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-{% else %}
-    <div class="alert alert-info text-center">
-        <i class="fas fa-info-circle"></i> មិនមានសំណើរតម្កល់ប្រាក់ដែលកំពុងរងចាំទេ។
-    </div>
-{% endif %}
-
-<a href="{{ url_for('admin_panel') }}" class="btn btn-secondary mt-3">
-    <i class="fas fa-arrow-left"></i> ត្រលប់ទៅ Admin Panel
-</a>
-{% endblock %}
+<!DOCTYPE html>
+<html>
+<head><title>Admin Deposits - គ្រប់គ្រងការតម្កល់</title></head>
+<body>
+    <h1>បញ្ជីប្រាក់តម្កល់ដែលកំពុងរងចាំ</h1>
+    <table border="1">
+        <tr>
+            <th>ID</th><th>អ្នកប្រើ</th><th>ចំនួន</th><th>ថ្ងៃ</th><th>សកម្មភាព</th>
+        </tr>
+        {% for dep in deposits %}
+        <tr>
+            <td>{{ dep.id }}</td>
+            <td>{{ dep.user_id }} (ស្វែងរកឈ្មោះបាន ប៉ុន្តែអាចបន្ថែម join)</td>
+            <td>${{ '%.2f'|format(dep.amount) }}</td>
+            <td>{{ dep.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+            <td>
+                <form method="POST" action="{{ url_for('admin_deposits_approve', deposit_id=dep.id) }}" style="display:inline">
+                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit">✅ យល់ព្រម</button>
+                </form>
+                <form method="POST" action="{{ url_for('admin_deposits_reject', deposit_id=dep.id) }}" style="display:inline">
+                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit">❌ បដិសេធ</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+    <p><a href="{{ url_for('admin_deposits') }}">ធ្វើឲ្យទាន់សម័យ</a></p>
+</body>
+</html>

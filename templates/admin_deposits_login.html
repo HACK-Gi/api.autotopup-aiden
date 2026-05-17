@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head><title>Admin Deposits - Login</title></head>
+<body>
+    <h1>សូមបញ្ចូលពាក្យសម្ងាត់ដើម្បីគ្រប់គ្រងការតម្កល់</h1>
+    <form method="POST">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+        <input type="password" name="password" placeholder="ពាក្យសម្ងាត់" required>
+        <button type="submit">ចូល</button>
+    </form>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <p class="{{ category }}">{{ message }}</p>
+      {% endfor %}
+    {% endwith %}
+</body>
+</html>
